@@ -1,11 +1,32 @@
 /* Incremental trainer tools. Keeps the v1 storage key, arrays and legacy fields. */
+const decimal = value => {
+  if(value === '' || value == null)return null;
+  const raw=String(value).trim();
+  if(!/^\d+(?:[,.]\d+)?$/.test(raw))return NaN;
+  return Number(raw.replace(',','.'));
+};
+const measureText = value => value === '' || value == null ? '—' : Number.isFinite(decimal(value)) ? fmt(decimal(value),2) : esc(value);
 const shown = value => value === '' || value == null ? '—' : esc(value);
-const num = value => value === '' || value == null ? null : Number(value);
+const num = decimal;
+const decimalField=(key,label,value,min,max)=>f(key,label,'text',value,`inputmode="decimal" autocomplete="off" data-decimal min="${min}" max="${max}" pattern="[0-9]+([,.][0-9]+)?" title="Ingresá un número con coma o punto decimal"`);
+function normalizeMeasures(data,keys){
+  for(const key of keys){
+    const raw=String(data[key]??'').trim();
+    if(!raw){data[key]='';continue}
+    const value=decimal(raw),field=$(`[name="${key}"]`);
+    if(!Number.isFinite(value)||value<Number(field.min)||value>Number(field.max)){
+      field.setCustomValidity(`Ingresá un valor válido entre ${field.min} y ${field.max}.`);
+      field.reportValidity();field.addEventListener('input',()=>field.setCustomValidity(''),{once:true});return false;
+    }
+    data[key]=value;
+  }
+  return true;
+}
 const change = (previous,current,unit) => {
   const a=num(previous),b=num(current);
   if(a===null||b===null||!Number.isFinite(a)||!Number.isFinite(b))return '';
   const diff=Math.round((b-a)*10)/10;
-  return `<span class="delta">${esc(previous)} → ${esc(current)} ${unit} <strong>(${diff>0?'+':''}${fmt(diff)} ${unit})</strong></span>`;
+  return `<span class="delta">${measureText(previous)} → ${measureText(current)} ${unit} <strong>(${diff>0?'+':''}${fmt(diff)} ${unit})</strong></span>`;
 };
 const measurements=[['weight','Peso','kg'],['waist','Cintura','cm'],['navel','Ombligo','cm'],['chest','Pecho','cm'],['hip','Cadera','cm'],['arm','Brazo','cm'],['thigh','Muslo','cm'],['bodyFat','Grasa corporal','%'],['muscleMass','Masa muscular','kg']];
 const intensity = e => e.planned?.intensityType ? `${e.planned.intensityType} ${shown(e.planned.intensityValue)}` : e.rpe ? `RPE ${esc(e.rpe)}` : e.rir!==''&&e.rir!=null ? `RIR ${esc(e.rir)}` : '—';
@@ -17,11 +38,12 @@ studentForm=function(s){
     ${f('birthDate','Fecha de nacimiento','date',s?.birthDate)}${select('sex','Sexo',['','Mujer','Varón','Otro','Prefiere no informar'],s?.sex||'')}
     ${f('availability','Días disponibles por semana','number',s?.availability,'min="1" max="7"')}${f('sessionMinutes','Minutos disponibles por sesión','number',s?.sessionMinutes,'min="10" max="300" step="5"')}
     ${select('trainingPlace','Lugar de entrenamiento',['','Gimnasio','Casa','Otro'],s?.trainingPlace||'')}${f('start','Fecha de inicio','date',s?.start||date())}
-    ${f('height','Altura (cm)','number',s?.height,'min="80" max="250" step="0.1"')}${f('initialWeight','Peso inicial (kg)','number',s?.initialWeight,'min="20" max="400" step="0.1"')}
+    ${decimalField('height','Altura (cm)',s?.height,80,250)}${decimalField('initialWeight','Peso inicial (kg)',s?.initialWeight,20,400)}
     ${textarea('experience','Experiencia previa de entrenamiento',s?.experience)}${textarea('limitations','Lesiones o limitaciones relevantes',s?.limitations)}
     ${textarea('equipment','Equipamiento disponible',s?.equipment)}${textarea('notes','Contexto y observaciones',s?.notes)}
     ${textarea('trainerNotes','Observaciones del entrenador',s?.trainerNotes)}
   </div>`,d=>{
+    if(!normalizeMeasures(d,['height','initialWeight']))return false;
     const item={...d,name:d.name.trim(),id:s?.id||id(),createdAt:s?.createdAt||new Date().toISOString()};
     commit(v=>{if(s)Object.assign(v.students.find(x=>x.id===s.id),item);else v.students.push(item)});
     selectedId=item.id;detailTab='overview';render();
@@ -34,7 +56,7 @@ function controlsFor(sid){
   return `<div class="control-list">${entries.map((c,i)=>{
     const previous=entries[i+1];
     return `<article class="card control-card"><div class="plan-head"><div><h3>${niceDate(c.date)}</h3><p class="hint">${esc(c.notes||'Control de progreso')}</p></div><button class="ghost" data-action="checkin-edit" data-id="${c.id}">Editar</button></div>
-      <div class="measurement-grid">${measurements.filter(([key])=>c[key]!==''&&c[key]!=null).map(([key,label,unit])=>`<div><small>${label}</small><strong>${esc(c[key])} ${unit}</strong>${previous?change(previous[key],c[key],unit):''}</div>`).join('')||'<p class="hint">Sin medidas numéricas.</p>'}</div>
+      <div class="measurement-grid">${measurements.filter(([key])=>c[key]!==''&&c[key]!=null).map(([key,label,unit])=>`<div><small>${label}</small><strong>${measureText(c[key])} ${unit}</strong>${previous?change(previous[key],c[key],unit):''}</div>`).join('')||'<p class="hint">Sin medidas numéricas.</p>'}</div>
       ${c.adherence!==''&&c.adherence!=null?`<p class="hint">Adherencia: ${esc(c.adherence)}%</p>`:''}
     </article>`;
   }).join('')}</div>`;
@@ -42,8 +64,9 @@ function controlsFor(sid){
 
 checkinForm=function(c,sid){
   modal(c?'Editar control':'Registrar progreso','Registrá solo las medidas disponibles. La fecha es obligatoria.',`<div class="form-grid">${f('date','Fecha *','date',c?.date||date(),'required')}${f('adherence','Adherencia estimada (%)','number',c?.adherence,'min="0" max="100" step="1"')}
-    ${measurements.map(([key,label,unit])=>f(key,`${label} (${unit})`,'number',c?.[key],`min="0" max="500" step="0.1" inputmode="decimal"`)).join('')}
+    ${measurements.map(([key,label,unit])=>decimalField(key,`${label} (${unit})`,c?.[key],0,500)).join('')}
     ${textarea('notes','Observaciones',c?.notes)}</div>`,d=>{
+      if(!normalizeMeasures(d,measurements.map(([key])=>key)))return false;
       commit(v=>{const item={...d,id:c?.id||id(),studentId:c?.studentId||sid};if(c)Object.assign(v.checkins.find(x=>x.id===c.id),item);else v.checkins.push(item)});
     });
 };
@@ -128,9 +151,9 @@ actions['photo-new']=e=>photoForm(e.dataset.sid);
 renderDetail=function(){
   const s=student(selectedId);if(!s)return empty('Alumno no encontrado.');
   const tabs=[['overview','Ficha'],['plans','Rutina'],['progress','Evolución'],['photos','Fotos']];
-  const values=[['Objetivo',s.goal],['Nivel',s.level],['Disponibilidad semanal',s.availability?`${s.availability} días`:null],['Duración por sesión',s.sessionMinutes?`${s.sessionMinutes} min`:null],['Lugar',s.trainingPlace],['Inicio',niceDate(s.start)],['Nacimiento',s.birthDate?niceDate(s.birthDate):null],['Sexo',s.sex],['Altura',s.height?`${s.height} cm`:null],['Peso inicial',s.initialWeight?`${s.initialWeight} kg`:null],['Estado',s.status]];
+  const values=[['Objetivo',s.goal],['Nivel',s.level],['Disponibilidad semanal',s.availability?`${s.availability} días`:null],['Duración por sesión',s.sessionMinutes?`${s.sessionMinutes} min`:null],['Lugar',s.trainingPlace],['Inicio',niceDate(s.start)],['Nacimiento',s.birthDate?niceDate(s.birthDate):null],['Sexo',s.sex],['Altura',s.height?`${measureText(s.height)} cm`:null],['Peso inicial',s.initialWeight?`${measureText(s.initialWeight)} kg`:null],['Estado',s.status]];
   const sections={
-    overview:()=>`<div class="grid two"><div class="card"><h3>Evaluación inicial</h3><div class="profile-grid">${values.map(([label,value])=>`<div><small>${label}</small><strong>${shown(value)}</strong></div>`).join('')}</div><h3 class="subheading">Experiencia previa</h3><p class="hint long-text">${shown(s.experience)}</p><h3>Lesiones o limitaciones relevantes</h3><p class="hint long-text">${shown(s.limitations)}</p><h3>Equipamiento disponible</h3><p class="hint long-text">${shown(s.equipment)}</p><h3>Contexto y observaciones</h3><p class="hint long-text">${shown(s.notes)}</p><h3>Observaciones del entrenador</h3><p class="hint long-text">${shown(s.trainerNotes)}</p></div><div class="card"><h3>Último control</h3>${(()=>{const c=recent(state.checkins.filter(x=>x.studentId===s.id))[0];return c?`<p class="muted">${niceDate(c.date)}</p><div class="metric"><strong>${shown(c.weight)}</strong> kg</div><p class="hint">Cintura ${shown(c.waist)} cm · Ombligo ${shown(c.navel)} cm</p>`:empty('Todavía no hay controles.','Registrar progreso','checkin-new')})()}</div></div>`,
+    overview:()=>`<div class="grid two"><div class="card"><h3>Evaluación inicial</h3><div class="profile-grid">${values.map(([label,value])=>`<div><small>${label}</small><strong>${shown(value)}</strong></div>`).join('')}</div><h3 class="subheading">Experiencia previa</h3><p class="hint long-text">${shown(s.experience)}</p><h3>Lesiones o limitaciones relevantes</h3><p class="hint long-text">${shown(s.limitations)}</p><h3>Equipamiento disponible</h3><p class="hint long-text">${shown(s.equipment)}</p><h3>Contexto y observaciones</h3><p class="hint long-text">${shown(s.notes)}</p><h3>Observaciones del entrenador</h3><p class="hint long-text">${shown(s.trainerNotes)}</p></div><div class="card"><h3>Último control</h3>${(()=>{const c=recent(state.checkins.filter(x=>x.studentId===s.id))[0];return c?`<p class="muted">${niceDate(c.date)}</p><div class="metric"><strong>${measureText(c.weight)}</strong> kg</div><p class="hint">Cintura ${measureText(c.waist)} cm · Ombligo ${measureText(c.navel)} cm</p>`:empty('Todavía no hay controles.','Registrar progreso','checkin-new')})()}</div></div>`,
     plans:()=>`<div class="section-head"><h2>Bloques de ${esc(s.name)}</h2><button class="primary" data-action="plan-new" data-sid="${s.id}">+ Nuevo bloque</button></div>${state.plans.filter(x=>x.studentId===s.id).map(planCard).join('')||empty('Todavía no hay rutinas asignadas.')}`,
     progress:()=>`<div class="section-head"><h2>Controles y fuerza</h2><div class="detail-actions"><button class="secondary" data-action="session-new" data-sid="${s.id}">+ Sesión</button><button class="primary" data-action="checkin-new" data-sid="${s.id}">+ Control</button></div></div>${controlsFor(s.id)}<div class="section-head"><h2>Sesiones realizadas</h2></div>${sessionTable(s.id)}`,
     photos:()=>`<div class="section-head"><div><h2>Fotos de evolución</h2><p class="hint">Las imágenes anteriores siguen disponibles en este navegador. Las nuevas referencias se vinculan a una fecha o control; adjuntar archivos queda pendiente.</p></div><button class="primary" data-action="photo-new" data-sid="${s.id}">+ Referencia de foto</button></div>${photoCards(s.id)}`
